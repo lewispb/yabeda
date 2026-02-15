@@ -40,6 +40,11 @@ module Yabeda
       @collectors ||= Concurrent::Array.new
     end
 
+    # @return [Array<Proc>] All per-process collectors for metrics that are local to a worker process
+    def per_process_collectors
+      @per_process_collectors ||= Concurrent::Array.new
+    end
+
     def config
       @config ||= Config.new
     end
@@ -55,6 +60,24 @@ module Yabeda
           yabeda.collect_duration.measure({ location: collector.source_location.join(":") }, &collector)
         else
           collector.call
+        end
+      end
+    end
+
+    # Execute all per-process collector blocks, automatically tagged with the current worker identity.
+    #
+    # Unlike +collect!+, this method is meant to run inside each worker process so that
+    # per-process metrics (memory, GC stats, thread counts, etc.) are captured from every worker.
+    # Adapters should call this explicitly in each worker process.
+    def collect_per_process!
+      worker_pid = config.pid_provider.call
+      with_tags(worker_pid: worker_pid) do
+        per_process_collectors.each do |collector|
+          if config.debug?
+            yabeda.collect_duration.measure({ location: collector.source_location.join(":") }, &collector)
+          else
+            collector.call
+          end
         end
       end
     end
@@ -144,6 +167,7 @@ module Yabeda
       metrics.each_key { |metric| singleton_class.send(:remove_method, metric) if respond_to?(metric) }
       @metrics = nil
       collectors.clear
+      per_process_collectors.clear
       configurators.clear
       @config = Config.new
       instance_variable_set(:@configured_by, nil)

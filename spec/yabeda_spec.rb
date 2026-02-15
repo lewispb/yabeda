@@ -11,6 +11,7 @@ RSpec.describe Yabeda do
     expect(described_class.metrics).to eq({})
     expect(described_class.adapters).to eq({})
     expect(described_class.collectors).to eq([])
+    expect(described_class.per_process_collectors).to eq([])
     expect(described_class.default_tags).to eq({})
     expect(described_class.configured?).to be(false)
   end
@@ -115,6 +116,91 @@ RSpec.describe Yabeda do
 
         expect(adapter).to have_received(:perform_histogram_measure!).with(
           described_class.yabeda.collect_duration, { location: "/somewhere/metrics.rb:25" }, be_between(0.005, 0.05),
+        )
+      end
+    end
+  end
+
+  describe ".collect_per_process!" do
+    subject(:collect_per_process!) { described_class.collect_per_process! }
+
+    let(:adapter) do
+      instance_double(Yabeda::BaseAdapter, perform_gauge_set!: true, perform_histogram_measure!: true,
+                                           register!: true, debug!: true)
+    end
+    let(:collector) do
+      proc do
+        sleep(0.01)
+        described_class.test_gauge.set({}, 99)
+      end
+    end
+
+    before do
+      collect_block = collector
+      described_class.configure do
+        gauge :test_gauge
+        collect_per_process(&collect_block)
+      end
+      allow(collect_block).to receive(:source_location).and_return(["/somewhere/per_process.rb", 10])
+      described_class.configure!
+      described_class.register_adapter(:test_adapter, adapter)
+    end
+
+    after do
+      described_class.reset!
+      described_class.config.debug = false
+    end
+
+    it "calls registered per-process collector" do
+      collect_per_process!
+
+      expect(adapter).to have_received(:perform_gauge_set!).with(described_class.test_gauge, anything, 99)
+    end
+
+    it "auto-tags with worker_pid from pid_provider" do
+      collect_per_process!
+
+      expect(adapter).to have_received(:perform_gauge_set!).with(
+        described_class.test_gauge, hash_including(worker_pid: Process.pid), 99,
+      )
+    end
+
+    it "uses custom pid_provider for tagging" do
+      described_class.config.pid_provider = -> { "worker-7" }
+
+      collect_per_process!
+
+      expect(adapter).to have_received(:perform_gauge_set!).with(
+        described_class.test_gauge, hash_including(worker_pid: "worker-7"), 99,
+      )
+    end
+
+    it "does not run when collect! is called" do
+      described_class.collect!
+
+      expect(adapter).not_to have_received(:perform_gauge_set!)
+    end
+
+    it "succeeds when no per-process collectors are registered" do
+      described_class.per_process_collectors.clear
+
+      expect { collect_per_process! }.not_to raise_error
+    end
+
+    context "when in debug mode" do
+      before { described_class.debug! }
+
+      it "calls registered per-process collector" do
+        collect_per_process!
+
+        expect(adapter).to have_received(:perform_gauge_set!).with(described_class.test_gauge, anything, 99)
+      end
+
+      it "measures per-process collector runtime" do
+        collect_per_process!
+
+        expect(adapter).to have_received(:perform_histogram_measure!).with(
+          described_class.yabeda.collect_duration, hash_including(location: "/somewhere/per_process.rb:10"), be_between(0.005, 0.05),
         )
       end
     end

@@ -25,6 +25,13 @@ module Yabeda
         ::Yabeda.collectors.push(block)
       end
 
+      # Define actions to collect per-process metrics (memory, GC stats, etc.)
+      # These blocks run in each worker process via +collect_per_process!+ and are
+      # automatically tagged with the worker identity from +pid_provider+.
+      def collect_per_process(&block)
+        ::Yabeda.per_process_collectors.push(block)
+      end
+
       # Specify metric category or group for all consecutive metrics in this
       # +configure+ block.
       # On most adapters it is only adds prefix to the metric name but on some
